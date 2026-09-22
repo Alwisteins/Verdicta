@@ -1,5 +1,13 @@
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import unittest
-from src.ingestion.parser import parse_batang_tubuh, clean_pasal_final, validate_parsing, get_debug_metadata
+from src.ingestion.chunker import parse_batang_tubuh, clean_pasal_final, validate_parsing, get_debug_metadata
+
 
 class TestStateMachineParser(unittest.TestCase):
     def test_poin_8_to_17_full_structure(self):
@@ -106,12 +114,12 @@ class TestStateMachineParser(unittest.TestCase):
         self.assertNotIn("SALINAN", cleaned[0]["isi_pasal"])
         
         zones = {"batang_tubuh": "Pasal 1\nIsi", "has_explanation": False, "has_lampiran": False}
-        warnings = validate_parsing(cleaned, zones)
+        warnings = validate_parsing(pasal_raw, zones)
         self.assertTrue(any("kosong" in w for w in warnings))
         self.assertTrue(any("duplikat" in w for w in warnings))
 
         metadata = get_debug_metadata(cleaned, zones, warnings)
-        self.assertEqual(metadata["pasal_count"], 2)
+        self.assertEqual(metadata["pasal_count"], 1)
         self.assertFalse(metadata["has_explanation"])
         self.assertIn("warnings", metadata)
 

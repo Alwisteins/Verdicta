@@ -1,5 +1,13 @@
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import unittest
-from src.ingestion.parser import split_zones
+from src.ingestion.chunker import split_zones
+
 
 class TestSplitZones(unittest.TestCase):
     def test_poin_7_preamble_removal_and_line_wrap(self):
