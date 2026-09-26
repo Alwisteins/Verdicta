@@ -2,8 +2,10 @@ import argparse
 import logging
 import json
 import re
+import sys
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+from typing import Union, List
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -80,11 +82,6 @@ def extract_initial_data(response: requests.Response) -> dict | None:
 
 
 def _extract_next_f_payload(script_text: str) -> str:
-    """Extract the JS string payload from self.__next_f.push([1,"..."]).
-
-    The payload is a JS string literal with escaped quotes. We decode it as JSON
-    after locating the quoted substring.
-    """
     marker = 'self.__next_f.push([1,'
     start = script_text.find(marker)
     if start == -1:
@@ -118,7 +115,6 @@ def _extract_next_f_payload(script_text: str) -> str:
 
 
 def _extract_json_object(text: str, start_index: int) -> str:
-    """Extract a JSON object substring starting at the opening '{' character."""
     if start_index >= len(text) or text[start_index] != "{":
         return ""
 
@@ -158,38 +154,6 @@ def _extract_json_object(text: str, start_index: int) -> str:
     return ""
 
 
-def extract_doc_cards(response: requests.Response) -> list[dict]:
-    initial_data = extract_initial_data(response)
-    cards = []
-    if not initial_data:
-        return cards
-
-    results = initial_data.get("results", {})
-    items = results.get("items", [])
-    if not isinstance(items, list):
-        return cards
-
-    for item in items:
-        doc_id = str(item.get("id", "")).strip()
-        if not doc_id:
-            continue
-        cards.append(
-            {
-                "title": item.get("title", ""),
-                "subtitle": item.get("subtitle", ""),
-                "links": [
-                    {
-                        "doc_id": doc_id,
-                        "href": f"/doc/{doc_id}",
-                        "text": item.get("title", ""),
-                    }
-                ],
-            }
-        )
-
-    return cards
-
-
 def summarize_initial_data(response: requests.Response) -> dict:
     initial_data = extract_initial_data(response) or {}
     results = initial_data.get("results", {}) if isinstance(initial_data, dict) else {}
@@ -218,7 +182,7 @@ def extract_search_items(response: requests.Response) -> list[dict]:
     return [item for item in items if isinstance(item, dict)]
 
 
-def build_search_url(url: str, *, page: int | None = None, jenis_peraturan: int | None = None) -> str:
+def build_search_url(url: str, *, page: int | None = None, jenis_peraturan: int | str | None = None) -> str:
     parts = urlsplit(url)
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
 
@@ -232,18 +196,30 @@ def build_search_url(url: str, *, page: int | None = None, jenis_peraturan: int 
 
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
-def _safe_filename(text: str, fallback: str) -> str:
+
+def _safe_filename(text: str, fallback: str, max_length: int = 240) -> str:
     value = text.strip() if text else ""
     value = re.sub(r"[^A-Za-z0-9._-]+", "_", value)
     value = re.sub(r"_+", "_", value).strip("._-")
-    return value or fallback
+    if not value:
+        value = fallback
+    if len(value) > max_length:
+        value = value[:max_length].rstrip("._-")
+    return value
+
 
 def download_binary_file(url: str, destination: Path) -> bool:
     try:
+        abs_dest = destination.resolve()
+        if sys.platform == "win32" and not str(abs_dest).startswith("\\\\?\\"):
+            target_path = Path(f"\\\\?\\{abs_dest}")
+        else:
+            target_path = abs_dest
+
         with SESSION.get(url, headers=HEADERS, timeout=60, stream=True) as response:
             response.raise_for_status()
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            with destination.open("wb") as file_handle:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            with target_path.open("wb") as file_handle:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
                         file_handle.write(chunk)
@@ -251,104 +227,156 @@ def download_binary_file(url: str, destination: Path) -> bool:
     except requests.exceptions.RequestException:
         logger.warning("Gagal download file: %s", url)
         return False
+    except Exception:
+        logger.exception("Gagal menyimpan file ke %s", destination)
+        return False
+
+
+def load_category_map() -> dict:
+    map_path = Path("data/document_category_map.json")
+    if not map_path.exists():
+        logger.warning("Category map file not found at %s", map_path)
+        return {}
+    try:
+        with map_path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        logger.exception("Failed to load category map json")
+        return {}
 
 
 def scrape_and_download_documents(
-    url: str,
-    *,
-    limit_docs: int | None = None,
-    jenis_peraturan: int | None = None,
+    categories: Union[List[str], str] = "all",
+    limit_per_category: int = 10,
     output_dir: str = "data/jdihn",
+    base_url: str = "https://jdihn.go.id/search?c=peraturan",
 ) -> list[dict]:
-    seen_doc_ids: set[str] = set()
-    downloaded_docs: list[dict] = []
-    target_count = limit_docs if limit_docs and limit_docs > 0 else None
-    page = 1
+    category_map = load_category_map()
+
+    if isinstance(categories, str):
+        if categories.lower() == "all":
+            target_categories = list(category_map.keys())
+        else:
+            target_categories = [categories]
+    elif isinstance(categories, list):
+        target_categories = [str(c) for c in categories]
+    else:
+        target_categories = []
+
+    all_downloaded_docs = []
     base_output = Path(output_dir)
 
-    while target_count is None or len(downloaded_docs) < target_count:
-        page_url = build_search_url(url, page=page, jenis_peraturan=jenis_peraturan)
-        response = fetch_html(page_url)
-        if response is None:
-            break
+    for cat_code in target_categories:
+        if cat_code not in category_map:
+            logger.warning("[Scraper] Category code '%s' not found in category map. Skipping.", cat_code)
+            continue
 
-        summary = summarize_initial_data(response)
-        logger.info("Page %d summary: %s", page, summary)
+        cat_name = category_map[cat_code]
+        logger.info("[Scraper] Checking category %s (%s)...", cat_code, cat_name)
 
-        items = extract_search_items(response)
-        page_doc_ids = [str(item.get("id", "")).strip() for item in items if str(item.get("id", "")).strip()]
-        overlap = [doc_id for doc_id in page_doc_ids if doc_id in seen_doc_ids]
-        new_count = 0
+        seen_doc_ids: set[str] = set()
+        category_downloaded: list[dict] = []
+        page = 1
 
-        for item in items:
-            doc_id = str(item.get("id", "")).strip()
-            if not doc_id or doc_id in seen_doc_ids:
-                continue
-
-            seen_doc_ids.add(doc_id)
-            new_count += 1
-            
-            download_url = f"https://jdihn.go.id/api/doc/{doc_id}/file?action=download";
-
-            title = str(item.get("title", "")).strip() or f"doc-{doc_id}"
-            safe_title = _safe_filename(title, f"doc_{doc_id}")
-            destination_dir = base_output / f"jenis_{jenis_peraturan}" if jenis_peraturan is not None else base_output
-            destination = destination_dir / f"{safe_title}.pdf"
-
-            if download_binary_file(download_url, destination):
-                downloaded_docs.append(
-                    {
-                        "doc_id": doc_id,
-                        "title": title,
-                        "download_url": download_url,
-                        "file_path": str(destination),
-                    }
-                )
-                logger.info("Downloaded doc_id=%s to %s", doc_id, destination)
-            else:
-                logger.warning("Download gagal untuk doc_id=%s", doc_id)
-
-            if target_count is not None and len(downloaded_docs) >= target_count:
+        while len(category_downloaded) < limit_per_category:
+            page_url = build_search_url(base_url, page=page, jenis_peraturan=cat_code)
+            response = fetch_html(page_url)
+            if response is None:
                 break
 
-        logger.info(
-            "Page %d detail: first_id=%s last_id=%s overlap=%d new=%d downloaded=%d",
-            page,
-            page_doc_ids[0] if page_doc_ids else None,
-            page_doc_ids[-1] if page_doc_ids else None,
-            len(overlap),
-            new_count,
-            len(downloaded_docs),
-        )
+            items = extract_search_items(response)
+            if not items:
+                break
 
-        if new_count == 0:
-            break
+            page_doc_ids = [str(item.get("id", "")).strip() for item in items if str(item.get("id", "")).strip()]
+            new_count = 0
 
-        page += 1
+            for item in items:
+                if len(category_downloaded) >= limit_per_category:
+                    break
 
-    return downloaded_docs
+                doc_id = str(item.get("id", "")).strip()
+                if not doc_id or doc_id in seen_doc_ids:
+                    continue
+
+                seen_doc_ids.add(doc_id)
+                new_count += 1
+
+                download_url = f"https://jdihn.go.id/api/doc/{doc_id}/file?action=download"
+                source_url = f"https://jdihn.go.id/doc/{doc_id}"
+
+                title = str(item.get("title", "")).strip() or f"doc-{doc_id}"
+                safe_title = _safe_filename(title, f"doc_{doc_id}")
+
+                destination_dir = base_output / f"jenis_{cat_code}"
+                destination = destination_dir / f"{safe_title}.pdf"
+
+                if download_binary_file(download_url, destination):
+                    doc_record = {
+                        "category_code": cat_code,
+                        "category_name": cat_name,
+                        "doc_id": doc_id,
+                        "title": title,
+                        "filename": destination.name,
+                        "file_path": str(destination),
+                        "source_url": source_url,
+                        "download_url": download_url,
+                    }
+                    category_downloaded.append(doc_record)
+                    all_downloaded_docs.append(doc_record)
+                    logger.info(
+                        "[Scraper] Checking category %s... Progress: %d/%d items processed",
+                        cat_code,
+                        len(category_downloaded),
+                        limit_per_category,
+                    )
+                else:
+                    logger.warning("Download gagal untuk doc_id=%s", doc_id)
+
+            if new_count == 0 or len(category_downloaded) >= limit_per_category:
+                break
+
+            page += 1
+
+        logger.info("[Scraper] Finished category %s (%s). Total downloaded: %d", cat_code, cat_name, len(category_downloaded))
+
+    return all_downloaded_docs
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Scraper JDIHN dengan filter kategori dan limit")
     parser.add_argument(
-        "--limit-docs",
-        type=int,
-        default=None,
-        help="Batas jumlah dokumen yang berhasil didownload",
+        "--categories",
+        type=str,
+        default="all",
+        help="Kategori peraturan (misal: '9' atau '9,11,12' atau 'all')",
     )
     parser.add_argument(
-        "--jenis-peraturan",
+        "--limit-per-category",
         type=int,
-        default=None,
-        help="Filter jenis peraturan untuk URL JDIHN",
+        default=10,
+        help="Batas jumlah dokumen per kategori",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="data/jdihn",
+        help="Direktori output penyimpanan PDF",
     )
     args = parser.parse_args()
 
+    if args.categories.lower() != "all":
+        if "," in args.categories:
+            categories = [c.strip() for c in args.categories.split(",") if c.strip()]
+        else:
+            categories = args.categories.strip()
+    else:
+        categories = "all"
+
     cards = scrape_and_download_documents(
-        "https://jdihn.go.id/search?c=peraturan",
-        limit_docs=args.limit_docs,
-        jenis_peraturan=args.jenis_peraturan,
+        categories=categories,
+        limit_per_category=args.limit_per_category,
+        output_dir=args.output_dir,
     )
     print("\n=== DOWNLOADED DOCS ===")
     if not cards:
@@ -356,10 +384,10 @@ def main() -> None:
         return
 
     for idx, card in enumerate(cards, start=1):
-        print(f"{idx}. doc_id={card['doc_id']}")
+        print(f"{idx}. [{card['category_code']} - {card['category_name']}] doc_id={card['doc_id']}")
         print(f"   title={card['title']}")
-        print(f"   download_url={card['download_url']}")
         print(f"   file_path={card['file_path']}")
+        print(f"   source_url={card['source_url']}")
 
 
 if __name__ == "__main__":
