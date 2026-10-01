@@ -1,4 +1,5 @@
 import os
+import sys
 from typing import List, Optional
 from langchain_core.documents import Document
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
@@ -8,6 +9,18 @@ from qdrant_client.http import models as qdrant_models
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_orig_qdrant_del = QdrantClient.__del__
+
+def _safe_qdrant_del(self):
+    if sys.meta_path is None:
+        return
+    try:
+        _orig_qdrant_del(self)
+    except Exception:
+        pass
+
+QdrantClient.__del__ = _safe_qdrant_del
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 COLLECTION_NAME = os.getenv("QDRANT_COLLECTION", "law_chapters")
@@ -25,7 +38,14 @@ class VectorStoreManager:
             output_dimensionality=EMBEDDING_DIMENSION
         )
         
-        self.client = QdrantClient(url=QDRANT_URL)
+        # Cek apakah menggunakan local storage atau remote server
+        if QDRANT_URL.startswith("path:"):
+            path = QDRANT_URL.replace("path:", "").strip()
+            self.client = QdrantClient(path=path)
+        elif os.path.exists("qdrant_storage"):
+            self.client = QdrantClient(path="qdrant_storage")
+        else:
+            self.client = QdrantClient(url=QDRANT_URL)
         self._ensure_collection_exists()
         
     def _ensure_collection_exists(self):
@@ -98,3 +118,38 @@ class VectorStoreManager:
         )
         
         return results
+
+    def search_with_filter(
+        self,
+        query: str,
+        filters: Optional[dict] = None,
+        top_k: int = 4
+    ) -> List[Document]:
+        """
+        Mencari dokumen berdasarkan query semantik dengan filter metadata spesifik dan top_k.
+        """
+        return self.search_documents(query=query, k=top_k, filter_dict=filters)
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 4
+    ) -> List[Document]:
+        """
+        Mencari dokumen standar berdasarkan query semantik dan top_k tanpa filter.
+        """
+        return self.search_documents(query=query, k=top_k, filter_dict=None)
+
+    def close(self):
+        try:
+            self.client.close()
+        except Exception:
+            pass
+
+    def __del__(self):
+        if sys.meta_path is None:
+            return
+        try:
+            self.close()
+        except Exception:
+            pass

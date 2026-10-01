@@ -71,7 +71,7 @@ def load_and_transform_json(json_path: str) -> List[Document]:
         
     return documents
 
-from src.ingestion.vectorstore import VectorStoreManager
+from src.retrieval.vector import VectorStoreManager
 
 def run_ingestion(json_filepath: str):
     print(f"Membaca file: {json_filepath}...")
