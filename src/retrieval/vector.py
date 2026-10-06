@@ -2,7 +2,7 @@ import os
 import sys
 from typing import List, Optional
 from langchain_core.documents import Document
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
@@ -24,28 +24,31 @@ QdrantClient.__del__ = _safe_qdrant_del
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 COLLECTION_NAME = os.getenv("QDRANT_COLLECTION", "law_chapters")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-2")
-EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", "768"))
+EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", "1024"))
+ALLOWED_METADATA_FILTERS = {
+    "judul_dokumen",
+    "nomor_uu",
+    "category",
+    "category_code",
+    "pasal",
+    "bab",
+    "bab_judul",
+    "bagian",
+    "bagian_judul",
+    "source_file",
+}
 
 class VectorStoreManager:
     def __init__(self, collection_name: str = COLLECTION_NAME):
         self.collection_name = collection_name
         
-        self.embeddings = GoogleGenerativeAIEmbeddings(
-            model=GEMINI_EMBEDDING_MODEL,
-            google_api_key=GEMINI_API_KEY,
-            output_dimensionality=EMBEDDING_DIMENSION
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name="BAAI/bge-m3",
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True}
         )
         
-        # Cek apakah menggunakan local storage atau remote server
-        if QDRANT_URL.startswith("path:"):
-            path = QDRANT_URL.replace("path:", "").strip()
-            self.client = QdrantClient(path=path)
-        elif os.path.exists("qdrant_storage"):
-            self.client = QdrantClient(path="qdrant_storage")
-        else:
-            self.client = QdrantClient(url=QDRANT_URL)
+        self.client = QdrantClient(url=QDRANT_URL)
         self._ensure_collection_exists()
         
     def _ensure_collection_exists(self):
@@ -101,6 +104,9 @@ class VectorStoreManager:
         if filter_dict:
             filter_conditions = []
             for key, value in filter_dict.items():
+                if key not in ALLOWED_METADATA_FILTERS:
+                    print(f"[VectorStoreManager] Ignoring unsupported metadata filter: {key}")
+                    continue
                 if value is not None:
                     filter_conditions.append(
                         qdrant_models.FieldCondition(
@@ -108,14 +114,17 @@ class VectorStoreManager:
                             match=qdrant_models.MatchValue(value=value)
                         )
                     )
+            print(f"[VectorStoreManager] Filter conditions: {filter_conditions}")
             if filter_conditions:
                 qdrant_filter = qdrant_models.Filter(must=filter_conditions)    
-            
+           
         results = vectorstore.similarity_search(
             query=query,
             k=k,
             filter=qdrant_filter
         )
+        
+        print(f"[VectorStoreManager] Found {len(results)} documents for query: '{query}' with filter: {filter_dict}")
         
         return results
 

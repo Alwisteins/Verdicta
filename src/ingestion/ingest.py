@@ -1,7 +1,21 @@
 import json
 import os
+import re
 from typing import List
 from langchain_core.documents import Document
+
+from src.ingestion.chunker import resolve_document_category
+
+
+def _extract_nomor_uu(judul_dokumen: str) -> str:
+    nomor_match = re.search(
+        r"\bnomor\s+(\d+[A-Za-z]?)\s+tahun\s+(\d{4})\b",
+        judul_dokumen,
+        flags=re.IGNORECASE,
+    )
+    if nomor_match:
+        return f"Nomor {nomor_match.group(1)} Tahun {nomor_match.group(2)}"
+    return judul_dokumen
 
 def load_and_transform_json(json_path: str) -> List[Document]:
     if not os.path.exists(json_path):
@@ -13,15 +27,14 @@ def load_and_transform_json(json_path: str) -> List[Document]:
     # 1. Mengambil metadata  
     source_file = data.get("source_file", "")
     root_metadata = data.get("metadata", {})
-    category = root_metadata.get("category", "").strip()
-    category_code = root_metadata.get("category_code", "")
+    resolved_category = resolve_document_category(source_file)
+    category = (resolved_category.get("category") or root_metadata.get("category") or "").strip()
+    category_code = resolved_category.get("category_code") or root_metadata.get("category_code", "")
     
     # 2. Ektrak judul & nomor uu
     filename = os.path.basename(source_file)
     judul_dokumen = os.path.splitext(filename)[0].replace("_", " ").strip()
-    nomor_uu = judul_dokumen
-    if category and judul_dokumen.lower().startswith(category.lower()):
-        nomor_uu = judul_dokumen[len(category):].strip()
+    nomor_uu = _extract_nomor_uu(judul_dokumen)
         
     documents = []
     
@@ -71,9 +84,9 @@ def load_and_transform_json(json_path: str) -> List[Document]:
         
     return documents
 
-from src.retrieval.vector import VectorStoreManager
-
 def run_ingestion(json_filepath: str):
+    from src.retrieval.vector import VectorStoreManager
+
     print(f"Membaca file: {json_filepath}...")
     documents = load_and_transform_json(json_filepath)
     print(f"Berhasil memproses {len(documents)} pasal.")

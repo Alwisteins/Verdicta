@@ -492,6 +492,10 @@ def _load_category_map() -> dict[int, str]:
 DOCUMENT_CATEGORY_MAP: dict[int, str] = _load_category_map()
 
 
+def _normalize_category_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
 def resolve_document_category(pdf_path: str | Path | None = None, category_code: Optional[int] = None) -> dict:
     if category_code is not None:
         return {"category_code": category_code, "category": DOCUMENT_CATEGORY_MAP.get(category_code)}
@@ -499,14 +503,20 @@ def resolve_document_category(pdf_path: str | Path | None = None, category_code:
     if pdf_path is None:
         return {"category_code": None, "category": None}
 
-    filename = Path(pdf_path).stem.lower().replace("_", " ")
+    path_text = _normalize_category_text(str(pdf_path))
+    filename = _normalize_category_text(Path(pdf_path).stem)
+
+    jenis_match = re.search(r"\bjenis\s+(\d+)\b", path_text)
+    if jenis_match:
+        code = int(jenis_match.group(1))
+        return {"category_code": code, "category": DOCUMENT_CATEGORY_MAP.get(code)}
     
     # Sortir kategori berdasarkan panjang karakter (descending) 
     # agar mencocokkan yang paling spesifik terlebih dahulu (e.g. 'peraturan pemerintah' sebelum 'peraturan').
     sorted_categories = sorted(DOCUMENT_CATEGORY_MAP.items(), key=lambda x: len(x[1]), reverse=True)
     
     for code, name in sorted_categories:
-        if name.lower() in filename:
+        if _normalize_category_text(name) in filename:
             return {"category_code": code, "category": name}
 
     return {"category_code": None, "category": None}

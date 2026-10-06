@@ -1,4 +1,5 @@
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
 from src.graph.state import GraphState
 from src.graph.nodes import router_node, retrieve_node
 from src.graph.edges import route_question
@@ -20,4 +21,6 @@ workflow.add_conditional_edges(
 
 workflow.add_edge("retrieve_node", END)
 
-app = workflow.compile()
+checkpointer = MemorySaver()
+
+app = workflow.compile(checkpointer=checkpointer)

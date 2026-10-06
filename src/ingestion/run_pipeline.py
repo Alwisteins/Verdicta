@@ -1,8 +1,9 @@
 import argparse
 import logging
 import json
+import re
 from pathlib import Path
-from typing import List, Union
+from typing import List, Optional, Union
 
 from src.ingestion.scrapper import scrape_and_download_documents
 from src.ingestion.chunker import (
@@ -23,9 +24,72 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def scrape_documents(categories: Union[str, List[str]], limit_per_category: int, output_dir: str) -> List[Path]:
+    logger.info("==================================================")
+    logger.info("=== STEP 1: SCRAPER EXECUTION ===")
+    logger.info("==================================================")
+    
+    downloaded_docs = scrape_and_download_documents(
+        categories=categories,
+        limit_per_category=limit_per_category,
+        output_dir=output_dir,
+        )
+    logger.info("[Scraper] Total downloaded documents: %d", len(downloaded_docs))
+    return downloaded_docs
+
+def parse_and_chunk_documents(jdihn_dir: str, parsing_output_dir: str, auto_cleanup_pdf: bool) -> None:
+    logger.info("==================================================")
+    logger.info("=== STEP 2 & 3: PARSING, CHUNKING & PDF CLEANUP ===")
+    logger.info("==================================================")
+
+    pdf_paths = iter_pdf_paths(root_path=str(jdihn_dir))
+    total_pdfs = len(pdf_paths)
+    if total_pdfs == 0:
+        logger.warning("[Pipeline] Tidak ada file PDF ditemukan di %s untuk diparsing.", jdihn_dir)
+    else:
+        for idx, pdf_path in enumerate(pdf_paths, start=1):
+            logger.info("[%d/%d] [Parsing] Converting %s -> JSON", idx, total_pdfs, pdf_path.name)
+            try:
+                raw_text = extract_raw_text(str(pdf_path))
+                zones = split_zones(raw_text)
+                pasal_list = parse_batang_tubuh(zones["batang_tubuh"])
+                pasal_list = clean_pasal_final(pasal_list)
+                warnings = validate_parsing(pasal_list, zones)
+                category_code: Optional[int] = None
+                m = re.search(r"jenis_(\d+)", str(pdf_path))
+                if m:
+                    try:
+                        category_code = int(m.group(1))
+                    except ValueError:
+                        category_code = None
+                metadata = get_debug_metadata(pasal_list, zones, warnings, pdf_path=pdf_path, category_code=category_code)
+
+                result_data = {
+                    "source_file": str(pdf_path),
+                    "metadata": metadata,
+                    "pasal_list": pasal_list,
+                }
+
+                out_file = parsing_path / f"{pdf_path.stem}_parsed.json"
+                out_file.write_text(json.dumps(result_data, ensure_ascii=False, indent=2), encoding="utf-8")
+                logger.info("[%d/%d] [Parsing] Success parsed & saved to %s", idx, total_pdfs, out_file.name)
+
+            except Exception as exc:
+                logger.error("[%d/%d] [Parsing Error] Gagal memparsing file %s: %s", idx, total_pdfs, pdf_path.name, exc, exc_info=True)
+            finally:
+                if auto_cleanup_pdf:
+                    # Step 3: Immediate PDF Cleanup (Ephemeral Storage)
+                    try:
+                        if pdf_path.exists():
+                            pdf_path.unlink()
+                            logger.info("[%d/%d] [Cleanup] Deleted temp PDF: %s", idx, total_pdfs, pdf_path.name)
+                    except Exception as cleanup_exc:
+                        logger.warning("[%d/%d] [Cleanup Warning] Gagal menghapus PDF %s: %s", idx, total_pdfs, pdf_path.name, cleanup_exc)
 
 def reset_qdrant_collection():
-    """Step 4: Reset / re-create Qdrant collection `law_chapters`."""
+    logger.info("==================================================")
+    logger.info("=== STEP 4: QDRANT COLLECTION RESET ===")
+    logger.info("==================================================")
     logger.info("[Qdrant] Resetting collection '%s'...", COLLECTION_NAME)
     vector_manager = VectorStoreManager()
     client = vector_manager.client
@@ -43,78 +107,7 @@ def reset_qdrant_collection():
     )
     logger.info("[Qdrant] Collection '%s' recreated fresh.", COLLECTION_NAME)
 
-
-def run_pipeline(
-    categories: Union[str, List[str]] = ["9", "10", "11", "12", "27", "36", "57", "58", "59"],
-    limit_per_category: int = 5,
-    jdihn_dir: str = "data/jdihn",
-    parsing_output_dir: str = "data/parsing-output",
-):
-    """Menjalankan alur kerja ingestion pipeline secara end-to-end secara sekuensial dan terisolasi."""
-    jdihn_path = Path(jdihn_dir)
-    parsing_path = Path(parsing_output_dir)
-    parsing_path.mkdir(parents=True, exist_ok=True)
-
-    # --- Step 1: Scraper Execution ---
-    logger.info("==================================================")
-    logger.info("=== STEP 1: SCRAPER EXECUTION ===")
-    logger.info("==================================================")
-    
-    downloaded_docs = scrape_and_download_documents(
-        categories=categories,
-        limit_per_category=limit_per_category,
-        output_dir=str(jdihn_path),
-    )
-    logger.info("[Scraper] Total downloaded documents: %d", len(downloaded_docs))
-
-    # --- Step 2 & 3: Parsing/Chunking & Immediate PDF Cleanup ---
-    logger.info("==================================================")
-    logger.info("=== STEP 2 & 3: PARSING, CHUNKING & PDF CLEANUP ===")
-    logger.info("==================================================")
-
-    pdf_paths = iter_pdf_paths(root_path=str(jdihn_path))
-    total_pdfs = len(pdf_paths)
-    if total_pdfs == 0:
-        logger.warning("[Pipeline] Tidak ada file PDF ditemukan di %s untuk diparsing.", jdihn_path)
-    else:
-        for idx, pdf_path in enumerate(pdf_paths, start=1):
-            logger.info("[%d/%d] [Parsing] Converting %s -> JSON", idx, total_pdfs, pdf_path.name)
-            try:
-                raw_text = extract_raw_text(str(pdf_path))
-                zones = split_zones(raw_text)
-                pasal_list = parse_batang_tubuh(zones["batang_tubuh"])
-                pasal_list = clean_pasal_final(pasal_list)
-                warnings = validate_parsing(pasal_list, zones)
-                metadata = get_debug_metadata(pasal_list, zones, warnings, pdf_path=pdf_path)
-
-                result_data = {
-                    "source_file": str(pdf_path),
-                    "metadata": metadata,
-                    "pasal_list": pasal_list,
-                }
-
-                out_file = parsing_path / f"{pdf_path.stem}_parsed.json"
-                out_file.write_text(json.dumps(result_data, ensure_ascii=False, indent=2), encoding="utf-8")
-                logger.info("[%d/%d] [Parsing] Success parsed & saved to %s", idx, total_pdfs, out_file.name)
-
-            except Exception as exc:
-                logger.error("[%d/%d] [Parsing Error] Gagal memparsing file %s: %s", idx, total_pdfs, pdf_path.name, exc, exc_info=True)
-            finally:
-                # Step 3: Immediate PDF Cleanup (Ephemeral Storage)
-                try:
-                    if pdf_path.exists():
-                        pdf_path.unlink()
-                        logger.info("[%d/%d] [Cleanup] Deleted temp PDF: %s", idx, total_pdfs, pdf_path.name)
-                except Exception as cleanup_exc:
-                    logger.warning("[%d/%d] [Cleanup Warning] Gagal menghapus PDF %s: %s", idx, total_pdfs, pdf_path.name, cleanup_exc)
-
-    # --- Step 4: Qdrant Collection Reset ---
-    logger.info("==================================================")
-    logger.info("=== STEP 4: QDRANT COLLECTION RESET ===")
-    logger.info("==================================================")
-    reset_qdrant_collection()
-
-    # --- Step 5: Batch Ingestion ---
+def ingest_documents_to_qdrant(parsing_path: Path) -> int:
     logger.info("==================================================")
     logger.info("=== STEP 5: BATCH INGESTION TO QDRANT ===")
     logger.info("==================================================")
@@ -140,6 +133,31 @@ def run_pipeline(
                 logger.warning("[%d/%d] [Ingest] Tidak ada dokumen valid ditemukan di %s", idx, total_json, json_file.name)
         except Exception as exc:
             logger.error("[%d/%d] [Ingest Error] Gagal meng-ingest file %s: %s", idx, total_json, json_file.name, exc, exc_info=True)
+    
+    return total_documents_pushed
+
+def run_pipeline(
+    categories: Union[str, List[str]] = ["9", "10", "11", "12", "27", "36", "57", "58", "59"],
+    limit_per_category: int = 5,
+    jdihn_dir: str = "data/jdihn",
+    parsing_output_dir: str = "data/parsing-output",
+):
+    """Menjalankan alur kerja ingestion pipeline secara end-to-end secara sekuensial dan terisolasi."""
+    jdihn_path = Path(jdihn_dir)
+    parsing_path = Path(parsing_output_dir)
+    parsing_path.mkdir(parents=True, exist_ok=True)
+
+    # --- Step 1: Scraper Execution ---
+    # scrape_documents(categories=categories, limit_per_category=limit_per_category, output_dir=str(jdihn_path))
+
+    # --- Step 2 & 3: Parsing/Chunking & Immediate PDF Cleanup ---
+    # parse_and_chunk_documents(jdihn_dir=str(jdihn_path), parsing_output_dir=str(parsing_path), auto_cleanup_pdf=True)
+
+    # --- Step 4: Qdrant Collection Reset ---
+    reset_qdrant_collection()
+
+    # --- Step 5: Batch Ingestion ---
+    total_documents_pushed = ingest_documents_to_qdrant(parsing_path=parsing_path)
 
     logger.info("==================================================")
     logger.info("=== PIPELINE SELESAI. Total dokumen di-ingest: %d ===", total_documents_pushed)

@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
@@ -31,7 +32,7 @@ class RouteQuery(BaseModel):
         default=None,
         description=(
             "Filter metadata yang relevan diekstrak dari pertanyaan "
-            "(seperti nomor_uu, tahun, jenis_dokumen, dan pasal jika spesifik)."
+            "(seperti nomor_uu, category, category_code, pasal, bab, dan bagian jika spesifik)."
         ),
     )
 
@@ -48,8 +49,11 @@ ROUTER_SYSTEM_PROMPT = """Anda adalah router AI spesialis hukum Indonesia. Tugas
 7. penalty_sanction: Menanyakan sanksi pidana, denda, atau akibat hukum.
 
 Instruksi Ekstraksi Filter:
-- Ekstrak filter metadata yang relevan ke dalam struktur `filters` (termasuk `nomor_uu`, `tahun`, `jenis_dokumen`, dan `pasal` jika ada).
-- Jika user menyebutkan pasal/nomor UU/tahun secara spesifik pada kategori APAPUN, pastikan field `filters` terisi secara akurat.
+- Ekstrak filter metadata HANYA memakai key yang benar-benar ada di metadata dokumen: `nomor_uu`, `category`, `category_code`, `pasal`, `bab`, dan `bagian`.
+- Jangan pernah membuat filter `tahun` atau `jenis_dokumen`; kedua key itu tidak ada di metadata.
+- Nilai `nomor_uu` harus berupa gabungan nomor dan tahun, misalnya `Nomor 1 Tahun 2022`, bukan hanya `1` dan bukan field tahun terpisah.
+- Jika user menyebut jenis dokumen, isi `category` dengan nama metadata, misalnya `undang undang`, `peraturan pemerintah pengganti undang undang`, `peraturan pemerintah`, atau `peraturan presiden`.
+- Jika user menyebutkan pasal/nomor dokumen secara spesifik pada kategori APAPUN, pastikan field `filters` terisi secara akurat.
 - Jika tidak ada metadata spesifik yang disebutkan, kosongkan `filters` (set None)."""
 
 router_prompt = ChatPromptTemplate.from_messages([
@@ -64,26 +68,107 @@ vector_manager = VectorStoreManager()
 _structured_llm = llm.with_structured_output(RouteQuery)
 
 
+DOCUMENT_CATEGORY_ALIASES = {
+    "perppu": "peraturan pemerintah pengganti undang undang",
+    "perpu": "peraturan pemerintah pengganti undang undang",
+    "peraturan pemerintah pengganti undang-undang": "peraturan pemerintah pengganti undang undang",
+    "peraturan pemerintah pengganti undang undang": "peraturan pemerintah pengganti undang undang",
+    "uu": "undang undang",
+    "undang-undang": "undang undang",
+    "undang undang": "undang undang",
+    "pp": "peraturan pemerintah",
+    "peraturan pemerintah": "peraturan pemerintah",
+    "perpres": "peraturan presiden",
+    "peraturan presiden": "peraturan presiden",
+}
+
+
+def _question_to_text(question: Any) -> str:
+    if isinstance(question, str):
+        return question
+    if isinstance(question, list):
+        return "\n".join(
+            str(getattr(item, "content", item))
+            for item in question
+            if getattr(item, "content", item)
+        )
+    return str(question)
+
+
+def _latest_question_text(question: Any) -> str:
+    if isinstance(question, list) and question:
+        return str(getattr(question[-1], "content", question[-1]))
+    return _question_to_text(question)
+
+
+def _normalize_filters(question: Any, filters: Optional[ExtractedFilters]) -> Optional[ExtractedFilters]:
+    text = _question_to_text(question)
+    current = filters.to_query_dict() if filters else {}
+
+    nomor_match = re.search(
+        r"(?:nomor|no\.?)\s*(\d+[A-Za-z]?)\s*(?:/|tahun|thn\.?)\s*(\d{4})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if nomor_match:
+        current["nomor_uu"] = f"Nomor {nomor_match.group(1)} Tahun {nomor_match.group(2)}"
+
+    pasal_match = re.search(r"\bpasal\s+([0-9]+[A-Za-z]?)\b", text, flags=re.IGNORECASE)
+    if pasal_match:
+        current["pasal"] = pasal_match.group(1).upper()
+
+    if isinstance(current.get("category"), str):
+        normalized_category = current["category"].strip().lower().replace("-", " ")
+        current["category"] = DOCUMENT_CATEGORY_ALIASES.get(normalized_category, normalized_category)
+
+    lowered = text.lower()
+    for alias, category in DOCUMENT_CATEGORY_ALIASES.items():
+        if re.search(rf"\b{re.escape(alias)}\b", lowered):
+            current.setdefault("category", category)
+            break
+
+    if not current:
+        return None
+    return ExtractedFilters(**current)
+
+
+def _relaxed_filters(filters: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    relaxed = {
+        key: value
+        for key, value in filters.items()
+        if key in {"nomor_uu", "pasal", "bab", "bagian"}
+    }
+    if relaxed and relaxed != filters:
+        return relaxed
+    return None
+
+
 def router_node(state: GraphState) -> Dict[str, Any]:
     """
     Node LangGraph untuk mengklasifikasikan pertanyaan pengguna ke dalam
     salah satu dari 7 kategori taksonomi hukum dan mengekstrak filter metadata.
     """
     question = state.get("question", "")
+    messages = state.get("messages", [])
+    
+    if not question and messages:
+        question = messages[-1].content
 
     if not question:
         logger.warning("router_node dipanggil tanpa 'question' di state.")
         return {"question_category": DEFAULT_CATEGORY, "filters": None}
 
     try:
-        messages = router_prompt.invoke({"question": question})
+        question_text = _question_to_text(question)
+        messages = router_prompt.invoke({"question": question_text})
         result = _structured_llm.invoke(messages)
-        filters = result.filters if result.filters else None
+        filters = _normalize_filters(question, result.filters if result.filters else None)
 
         # Konversi ke dict/query format untuk logging
         filters_dict = filters.to_query_dict() if hasattr(filters, "to_query_dict") and filters else filters
 
         logger.info("[Router] Category: %s | Filters: %s | Reason: %s", result.category, filters_dict, result.reasoning)
+        print(f"[Router] Category: {result.category} | Filters: {filters_dict} | Reason: {result.reasoning}")
         return {"question_category": result.category, "filters": filters}
 
     except Exception:
@@ -101,6 +186,10 @@ def retrieve_node(state: GraphState) -> Dict[str, Any]:
     question = state.get("question", "")
     question_category = state.get("question_category", DEFAULT_CATEGORY)
     filters_obj = state.get("filters", None)
+    
+    query_text = _latest_question_text(question)
+
+    print(f"[Retrieve] Question: {query_text} | Category: {question_category} | Filters: {filters_obj}")
 
     if not question:
         logger.warning("retrieve_node dipanggil tanpa 'question' di state.")
@@ -124,16 +213,27 @@ def retrieve_node(state: GraphState) -> Dict[str, Any]:
     try:
         # 3. Eksekusi Pencarian: Jika ADA filter metadata (kategori apapun), jalankan search_with_filter!
         if filters_dict:
+            print(f"[Retrieve] Executing Filtered Search with filters: {filters_dict}")
             logger.info("[Retrieve] Executing Filtered Search with filters: %s", filters_dict)
             documents = vector_manager.search_with_filter(
-                question,
+                query_text,
                 filters=filters_dict,
                 top_k=top_k
             )
+            if not documents:
+                fallback_filters = _relaxed_filters(filters_dict)
+                if fallback_filters:
+                    print(f"[Retrieve] Retrying with relaxed filters: {fallback_filters}")
+                    logger.info("[Retrieve] Retrying with relaxed filters: %s", fallback_filters)
+                    documents = vector_manager.search_with_filter(
+                        query_text,
+                        filters=fallback_filters,
+                        top_k=top_k
+                    )
         else:
             logger.info("[Retrieve] Executing Pure Semantic Search (Top-K: %d)", top_k)
             documents = vector_manager.search(
-                question,
+                query_text,
                 top_k=top_k
             )
 
