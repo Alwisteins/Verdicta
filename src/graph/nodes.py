@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-ROUTER_MODEL_NAME = "gemini-flash-latest"
+ROUTER_MODEL_NAME = "gemini-3.5-flash-lite"
 ROUTER_TEMPERATURE = 0
 DEFAULT_TOP_K = 5
 BROAD_TOP_K = 20
@@ -149,10 +149,6 @@ def router_node(state: GraphState) -> Dict[str, Any]:
     salah satu dari 7 kategori taksonomi hukum dan mengekstrak filter metadata.
     """
     question = state.get("question", "")
-    messages = state.get("messages", [])
-    
-    if not question and messages:
-        question = messages[-1].content
 
     if not question:
         logger.warning("router_node dipanggil tanpa 'question' di state.")
@@ -160,21 +156,27 @@ def router_node(state: GraphState) -> Dict[str, Any]:
 
     try:
         question_text = _question_to_text(question)
-        messages = router_prompt.invoke({"question": question_text})
-        result = _structured_llm.invoke(messages)
+        prompt_messages = router_prompt.invoke({"question": question_text})
+        print(f"[Router] Prompt Messages: {prompt_messages}")
+        result = _structured_llm.invoke(prompt_messages)
         filters = _normalize_filters(question, result.filters if result.filters else None)
 
         # Konversi ke dict/query format untuk logging
         filters_dict = filters.to_query_dict() if hasattr(filters, "to_query_dict") and filters else filters
+        # print(f"[Router] apakah resultnya bisa di print: {result}")
+        # print(f"[Router] Structured Output: Category: {result.category}, Filters: {filters_dict}, Reasoning: {result.reasoning}")
 
         logger.info("[Router] Category: %s | Filters: %s | Reason: %s", result.category, filters_dict, result.reasoning)
-        print(f"[Router] Category: {result.category} | Filters: {filters_dict} | Reason: {result.reasoning}")
+        # print(f"[Router] Category: {result.category} | Filters: {filters_dict} | Reason: {result.reasoning}")
         return {"question_category": result.category, "filters": filters}
 
-    except Exception:
+    except Exception as exc:
+        error_message = f"{type(exc).__name__}: {exc}"
         logger.exception(
-            "Gagal melakukan structured output di router_node, fallback ke default category."
+            "Gagal melakukan structured output di router_node, fallback ke default category. Error: %s",
+            error_message,
         )
+        print(f"[Router][Error] Gagal ekstrak kategori dari LLM: {error_message}")
         return {"question_category": DEFAULT_CATEGORY, "filters": None}
 
 
