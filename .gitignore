@@ -1,0 +1,13 @@
+backend/.env
+backend/qdrant_storage/
+backend/data/
+backend/tests/
+backend/src/__pycache__/
+backend/src/graph/__pycache__/
+backend/src/ingestion/__pycache__/
+backend/src/retrieval/__pycache__/
+
+frontend/node_modules/
+frontend/.env
+frontend/.next/
+frontend/mockup/
