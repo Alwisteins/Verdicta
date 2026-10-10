@@ -18,7 +18,12 @@ ROUTER_MODEL_NAME = "gemini-3.5-flash-lite"
 ROUTER_TEMPERATURE = 0
 DEFAULT_TOP_K = 5
 BROAD_TOP_K = 20
+RETRIEVAL_SCORE_THRESHOLD = 0.40
 DEFAULT_CATEGORY: CategoryType = "general_inquiry"
+NO_RELEVANT_DOCUMENTS_RESPONSE = (
+    "Maaf, dokumen tidak tersedia di database dan informasi spesifik terkait "
+    "hal tersebut tidak ditemukan."
+)
 
 
 class RouteQuery(BaseModel):
@@ -143,6 +148,35 @@ def _relaxed_filters(filters: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _document_score(doc: Any) -> Optional[float]:
+    metadata = getattr(doc, "metadata", {}) or {}
+    score = (
+        getattr(doc, "score", None)
+        or metadata.get("score")
+        or metadata.get("_score")
+        or metadata.get("relevance_score")
+    )
+    try:
+        return float(score)
+    except (TypeError, ValueError):
+        return None
+
+
+def _filter_relevant_documents(documents: list[Any]) -> list[Any]:
+    relevant_documents = [
+        doc
+        for doc in documents
+        if (_document_score(doc) or 0.0) >= RETRIEVAL_SCORE_THRESHOLD
+    ]
+    logger.info(
+        "[Retrieve] Keeping %d/%d documents with score >= %.2f",
+        len(relevant_documents),
+        len(documents),
+        RETRIEVAL_SCORE_THRESHOLD,
+    )
+    return relevant_documents
+
+
 def router_node(state: GraphState) -> Dict[str, Any]:
     """
     Node LangGraph untuk mengklasifikasikan pertanyaan pengguna ke dalam
@@ -243,6 +277,8 @@ def retrieve_node(state: GraphState) -> Dict[str, Any]:
         logger.exception("Gagal melakukan vector search di retrieve_node.")
         return {"documents": []}
 
+    documents = _filter_relevant_documents(documents)
+
     logger.info("Ditemukan %d dokumen relevan.", len(documents))
     return {"documents": documents}
 
@@ -315,16 +351,21 @@ def generation_node(state: GraphState) -> Dict[str, Any]:
 
     try:
         question_text = _question_to_text(question)
+
+        if not documents:
+            logger.info(
+                "[Generation] Tidak ada dokumen dengan score >= %.2f. Mengembalikan fallback.",
+                RETRIEVAL_SCORE_THRESHOLD,
+            )
+            return {"generation": NO_RELEVANT_DOCUMENTS_RESPONSE}
+
         user_prompt = [f"[PERTANYAAN PENGGUNA]\n{question_text}"]
 
-        if documents:
-            doc_contents = "\n\n".join(
-                f"Dokumen #{idx + 1}:\n{getattr(doc, 'page_content', str(doc))}"
-                for idx, doc in enumerate(documents)
-            )
-            user_prompt.append(f"[DOKUMEN RETRIEVAL]\n{doc_contents}")
-        else:
-            user_prompt.append("[DOKUMEN RETRIEVAL]\nTidak ada dokumen relevan yang ditemukan.")
+        doc_contents = "\n\n".join(
+            f"Dokumen #{idx + 1}:\n{getattr(doc, 'page_content', str(doc))}"
+            for idx, doc in enumerate(documents)
+        )
+        user_prompt.append(f"[DOKUMEN RETRIEVAL]\n{doc_contents}")
 
         if filters_dict:
             user_prompt.append(f"[FILTER METADATA]\n{filters_dict}")

@@ -114,17 +114,24 @@ class VectorStoreManager:
                             match=qdrant_models.MatchValue(value=value)
                         )
                     )
-            print(f"[VectorStoreManager] Filter conditions: {filter_conditions}")
+            # print(f"[VectorStoreManager] Filter conditions: {filter_conditions}")
             if filter_conditions:
                 qdrant_filter = qdrant_models.Filter(must=filter_conditions)    
            
-        results = vectorstore.similarity_search(
+        scored_results = vectorstore.similarity_search_with_score(
             query=query,
             k=k,
             filter=qdrant_filter
         )
+        results = []
+        for doc, score in scored_results:
+            doc.metadata = {
+                **(doc.metadata or {}),
+                "score": score,
+            }
+            results.append(doc)
         
-        print(f"[VectorStoreManager] Found {len(results)} documents for query: '{query}' with filter: {filter_dict}")
+        # print(f"[VectorStoreManager] Found {len(results)} documents for query: '{query}' with filter: {filter_dict}")
         
         return results
 
