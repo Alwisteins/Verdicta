@@ -1,6 +1,8 @@
 "use client";
 
 import { FormEvent, useRef, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ArrowRight,
   ArrowLeftRight,
@@ -128,6 +130,7 @@ function StatusPill({ children }: { children: React.ReactNode }) {
 }
 
 export default function Home() {
+  const router = useRouter();
   const queryRef = useRef<HTMLTextAreaElement>(null);
   const [query, setQuery] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -135,7 +138,8 @@ export default function Home() {
   function submitPrompt(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setIsSubmitting(true);
-    window.setTimeout(() => setIsSubmitting(false), 700);
+    const target = query.trim() ? `/chatbot?q=${encodeURIComponent(query.trim())}` : "/chatbot";
+    window.setTimeout(() => router.push(target), 250);
   }
 
   function fillPrompt(text: string) {
@@ -165,13 +169,13 @@ export default function Home() {
           </a>
         </nav>
         <div className="flex items-center gap-2">
-          <button className="hidden items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium text-muted transition hover:bg-panelSoft hover:text-ink sm:inline-flex">
+          <Link className="hidden items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium text-muted transition hover:bg-panelSoft hover:text-ink sm:inline-flex" href="/chatbot">
             <History className="size-4" />
             Riwayat
-          </button>
-          <button className="rounded-full bg-navy px-5 py-2 text-sm font-semibold text-white shadow-ambient transition hover:bg-slate-800">
+          </Link>
+          <Link className="rounded-full bg-navy px-5 py-2 text-sm font-semibold text-white shadow-ambient transition hover:bg-slate-800" href="/auth">
             Masuk / Daftar
-          </button>
+          </Link>
         </div>
       </header>
 
