@@ -3,7 +3,7 @@ name: Sync rag-agent to Hugging Face Space
 on:
   push:
     branches:
-      - main
+      - master
     paths:
       - "rag-agent/**" # Hanya berjalan jika ada perubahan di folder rag-agent
       - ".github/workflows/sync-backend-hf.yml"
