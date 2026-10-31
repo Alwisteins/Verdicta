@@ -40,6 +40,7 @@ ALLOWED_METADATA_FILTERS = {
     "source_file",
 }
 
+
 class VectorStoreManager:
     def __init__(self, collection_name: str = COLLECTION_NAME):
         self.collection_name = collection_name
