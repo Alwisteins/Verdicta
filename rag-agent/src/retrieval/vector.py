@@ -22,7 +22,9 @@ def _safe_qdrant_del(self):
 
 QdrantClient.__del__ = _safe_qdrant_del
 
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
+QDRANT_URL = os.getenv("QDRANT_URL")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 COLLECTION_NAME = os.getenv("QDRANT_COLLECTION", "law_chapters")
 EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", "1024"))
 ALLOWED_METADATA_FILTERS = {
@@ -43,12 +45,16 @@ class VectorStoreManager:
         self.collection_name = collection_name
         
         self.embeddings = HuggingFaceEmbeddings(
-            model_name="BAAI/bge-m3",
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True}
+            api_key=HUGGINGFACE_API_KEY,
+            model_name="BAAI/bge-m3"
         )
         
-        self.client = QdrantClient(url=QDRANT_URL)
+        self.client = QdrantClient(
+            host=QDRANT_URL,
+            port=6333,
+            api_key=QDRANT_API_KEY,
+            https=True
+        )
         self._ensure_collection_exists()
         
     def _ensure_collection_exists(self):
