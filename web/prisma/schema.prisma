@@ -1,0 +1,67 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+model User {
+  id             String     @id @default(uuid())
+  email          String     @unique
+  name           String?
+  image          String?
+  password       String
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  threads        Thread[]
+  feedbacks      Feedback[]
+
+  @@map("users")
+}
+
+model Thread {
+  id        String    @id @default(uuid())
+  userId    String
+  title     String    @default("Percakapan Baru")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages  Message[]
+
+  @@map("threads")
+}
+
+model Message {
+  id             String      @id @default(uuid())
+  threadId       String
+  role           MessageRole
+  content        String      @db.Text
+  category       String?
+  citedDocuments Json?
+  isFallback     Boolean     @default(false)
+  createdAt      DateTime    @default(now())
+  thread         Thread      @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  feedback       Feedback?
+
+  @@map("messages")
+}
+
+model Feedback {
+  id         String   @id @default(uuid())
+  userId     String
+  messageId  String   @unique
+  isPositive Boolean
+  comment    String?  @db.Text
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message    Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@map("feedbacks")
+}
