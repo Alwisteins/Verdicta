@@ -1,5 +1,6 @@
 rag-agent/.env
 rag-agent/__pycache__/
+rag-agent/data/
 rag-agent/qdrant_storage/
 rag-agent/data/
 rag-agent/tests/
