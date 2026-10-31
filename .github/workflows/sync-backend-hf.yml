@@ -1,0 +1,29 @@
+name: Sync rag-agent to Hugging Face Space
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "rag-agent/**" # Hanya berjalan jika ada perubahan di folder rag-agent
+      - ".github/workflows/sync-backend-hf.yml"
+  workflow_dispatch: # Mengizinkan trigger manual lewat tab Actions di GitHub
+
+jobs:
+  sync-to-hub:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync Subfolder rag-agent to Hugging Face
+        uses: nateraw/huggingface-sync-action@v0.0.5
+        with:
+          github_repo_id: ${{ github.repository }}
+          huggingface_repo_id: Alwisteins/verdicta-backend # Sesuaikan dengan Username/Space-Name milikmu
+          repo_type: space
+          space_sdk: gradio
+          hf_token: ${{ secrets.HF_TOKEN }}
+          subdirectory: rag-agent # Mengunggah khusus isi folder backend saja
