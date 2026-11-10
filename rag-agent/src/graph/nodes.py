@@ -88,21 +88,39 @@ DOCUMENT_CATEGORY_ALIASES = {
 }
 
 
+def _extract_text_from_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and "text" in part:
+                parts.append(part["text"])
+            elif hasattr(part, "text"):
+                parts.append(getattr(part, "text"))
+            else:
+                parts.append(str(part))
+        return "".join(parts).strip()
+    return str(content).strip()
+
+
 def _question_to_text(question: Any) -> str:
     if isinstance(question, str):
         return question
     if isinstance(question, list):
         return "\n".join(
-            str(getattr(item, "content", item))
+            _extract_text_from_content(getattr(item, "content", item))
             for item in question
             if getattr(item, "content", item)
         )
-    return str(question)
+    return _extract_text_from_content(getattr(question, "content", question))
 
 
 def _latest_question_text(question: Any) -> str:
     if isinstance(question, list) and question:
-        return str(getattr(question[-1], "content", question[-1]))
+        return _extract_text_from_content(getattr(question[-1], "content", question[-1]))
     return _question_to_text(question)
 
 
@@ -176,6 +194,80 @@ def _filter_relevant_documents(documents: list[Any]) -> list[Any]:
     )
     return relevant_documents
 
+CONDENSE_SYSTEM_PROMPT = """Kamu adalah penulis ulang pertanyaan untuk sistem pencarian peraturan perundang-undangan Indonesia.
+Tugasmu HANYA menulis ulang pertanyaan terakhir pengguna menjadi pertanyaan yang berdiri sendiri, supaya bisa dicari di basis data tanpa melihat percakapan sebelumnya.
+
+ATURAN:
+1. Jika pertanyaan terakhir sudah jelas dan bisa dipahami tanpa percakapan sebelumnya, KEMBALIKAN PERSIS seperti aslinya, tanpa perubahan apa pun.
+2. Tambahkan konteks dari percakapan HANYA jika pertanyaan terakhir jelas bergantung padanya, misalnya memakai kata seperti "itu", "tadi", "terus", "kalau begitu", "pasal tersebut", atau tidak menyebut subjek sama sekali.
+3. Jika pengguna berpindah ke topik baru, JANGAN membawa peraturan, pasal, atau topik dari percakapan sebelumnya.
+4. Hanya gunakan informasi yang tertulis di percakapan atau di daftar sumber. JANGAN menambahkan nomor pasal, nama peraturan, atau fakta hukum dari pengetahuanmu sendiri.
+5. Pertahankan nama peraturan, nomor, tahun, dan nomor pasal persis seperti tertulis. Jangan diparafrase.
+6. Jika tidak yakin apakah pertanyaan bergantung pada percakapan sebelumnya, kembalikan pertanyaan asli tanpa diubah.
+7. JANGAN menjawab pertanyaan dan JANGAN memberi penjelasan. Keluarkan HANYA satu pertanyaan hasil tulis ulang, tanpa tanda kutip dan tanpa awalan.
+8. Gunakan Bahasa Indonesia dan buat sesingkat mungkin.
+
+CONTOH (hanya untuk menunjukkan format):
+
+Contoh 1, pertanyaan lanjutan:
+Percakapan:
+User: Siapa saja yang berhak mendapat tunjangan hari raya menurut Peraturan Pemerintah Nomor 9 Tahun 2026?
+Asisten: (sumber: Peraturan Pemerintah Nomor 9 Tahun 2026 Pasal 2)
+Pertanyaan terakhir: Kalau pensiunan gimana?
+Hasil: Apakah pensiunan berhak mendapat tunjangan hari raya menurut Peraturan Pemerintah Nomor 9 Tahun 2026?
+
+Contoh 2, pindah topik:
+Percakapan:
+User: Siapa saja yang berhak mendapat tunjangan hari raya menurut Peraturan Pemerintah Nomor 9 Tahun 2026?
+Asisten: (sumber: Peraturan Pemerintah Nomor 9 Tahun 2026 Pasal 2)
+Pertanyaan terakhir: Bagaimana aturan izin usaha untuk toko online?
+Hasil: Bagaimana aturan izin usaha untuk toko online?
+
+Contoh 3, sudah mandiri:
+Percakapan:
+User: Apa itu tunjangan hari raya?
+Asisten: (sumber: Peraturan Pemerintah Nomor 9 Tahun 2026 Pasal 8)
+Pertanyaan terakhir: Apa isi Pasal 10 Peraturan Pemerintah Nomor 9 Tahun 2026?
+Hasil: Apa isi Pasal 10 Peraturan Pemerintah Nomor 9 Tahun 2026?"""
+
+def condense_question_node(state: GraphState) -> Dict[str, Any]:
+    question = state.get("question", "")
+    history = state.get("history", [])
+
+    if not history:
+        return {"question": question}
+
+    try:
+        latest_text = _latest_question_text(question)
+        history_text = "\n".join(
+            f"{getattr(msg, 'type', 'message')}: {getattr(msg, 'content', str(msg))}"
+            for msg in history
+        )
+
+        condense_prompt = ChatPromptTemplate.from_messages([
+            ("system", CONDENSE_SYSTEM_PROMPT),
+            ("human", "Percakapan:\n{history}\n\nPertanyaan terakhir:\n{question}"),
+        ])
+
+        messages = condense_prompt.invoke({
+            "history": history_text,
+            "question": latest_text,
+        })
+
+        result = llm.invoke(messages)
+        condensed_text = _extract_text_from_content(result.content)
+
+        if not condensed_text:
+            condensed_text = latest_text
+
+        logger.info("[Condense] Original: %s | Condensed: %s", latest_text, condensed_text)
+        return {"question": condensed_text}
+
+    except Exception:
+        logger.exception("Gagal melakukan condense question, menggunakan pertanyaan asli.")
+        return {"question": question}
+    
+    
 
 def router_node(state: GraphState) -> Dict[str, Any]:
     """

@@ -24,9 +24,20 @@ class ExtractedFilters(BaseModel):
             for key, value in self.model_dump(exclude_none=True).items()
             if not (isinstance(value, str) and not value.strip())
         }
+        
+from langchain_core.messages import BaseMessage
+
+def trim_messages(existing: list[BaseMessage], new: list[BaseMessage] | BaseMessage) -> list[BaseMessage]:
+    "Reducer untuk memangkas dan membatasi 6 pesan terakhir"
+    if isinstance(new, list):
+        combined = existing + new
+    else:
+        combined = existing + [new]
+    return combined[-6:]
 
 class GraphState(TypedDict):
-    question         : Annotated[list, add_messages]    # user input
+    question         : Any                              # user input (overwritten, not appended)
+    history          : Annotated[list, trim_messages]   # percakapan sebelumnya
     question_category: CategoryType                     # kategori pertanyaan
     filters          : Optional[ExtractedFilters]       # filter metadata
     documents        : List[Document]                   # hasil retrieval dari Qdrant

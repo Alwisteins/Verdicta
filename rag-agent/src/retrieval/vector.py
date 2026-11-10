@@ -46,15 +46,12 @@ class VectorStoreManager:
         self.collection_name = collection_name
         
         self.embeddings = HuggingFaceEmbeddings(
-            api_key=HUGGINGFACE_API_KEY,
             model_name="BAAI/bge-m3"
         )
         
         self.client = QdrantClient(
-            host=QDRANT_URL,
-            port=6333,
-            api_key=QDRANT_API_KEY,
-            https=True
+            url=QDRANT_URL,
+            api_key=QDRANT_API_KEY
         )
         self._ensure_collection_exists()
         
