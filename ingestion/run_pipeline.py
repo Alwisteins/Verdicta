@@ -5,8 +5,8 @@ import re
 from pathlib import Path
 from typing import List, Optional, Union
 
-from src.ingestion.scrapper import scrape_and_download_documents
-from src.ingestion.chunker import (
+from ingestion.scrapper import scrape_and_download_documents
+from ingestion.chunker import (
     iter_pdf_paths,
     extract_raw_text,
     split_zones,
@@ -15,8 +15,8 @@ from src.ingestion.chunker import (
     validate_parsing,
     get_debug_metadata,
 )
-from src.ingestion.ingest import load_and_transform_json
-from src.retrieval.vector import VectorStoreManager, COLLECTION_NAME, EMBEDDING_DIMENSION, qdrant_models
+from ingestion.ingest import load_and_transform_json
+from ingestion.vector_store import VectorStoreManager, COLLECTION_NAME
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +42,8 @@ def parse_and_chunk_documents(jdihn_dir: str, parsing_output_dir: str, auto_clea
     logger.info("=== STEP 2 & 3: PARSING, CHUNKING & PDF CLEANUP ===")
     logger.info("==================================================")
 
+    parsing_path = Path(parsing_output_dir)
+    parsing_path.mkdir(parents=True, exist_ok=True)
     pdf_paths = iter_pdf_paths(root_path=str(jdihn_dir))
     total_pdfs = len(pdf_paths)
     if total_pdfs == 0:
@@ -98,14 +100,11 @@ def reset_qdrant_collection():
         client.delete_collection(collection_name=COLLECTION_NAME)
         logger.info("[Qdrant] Existing collection '%s' deleted successfully.", COLLECTION_NAME)
     
-    client.create_collection(
-        collection_name=COLLECTION_NAME,
-        vectors_config=qdrant_models.VectorParams(
-            size=EMBEDDING_DIMENSION,
-            distance=qdrant_models.Distance.COSINE
-        )
-    )
-    logger.info("[Qdrant] Collection '%s' recreated fresh.", COLLECTION_NAME)
+    # Constructor creates the collection with the configured local model dimension.
+    vector_manager.close()
+    vector_manager = VectorStoreManager()
+    vector_manager.close()
+    logger.info("[Qdrant] Collection '%s' ready.", COLLECTION_NAME)
 
 def ingest_documents_to_qdrant(parsing_path: Path) -> int:
     logger.info("==================================================")
@@ -116,7 +115,7 @@ def ingest_documents_to_qdrant(parsing_path: Path) -> int:
     total_json = len(json_files)
     if total_json == 0:
         logger.warning("[Ingest] Tidak ada file JSON di %s untuk di-ingest.", parsing_path)
-        return
+        return 0
 
     vector_manager = VectorStoreManager()
     total_documents_pushed = 0

@@ -4,7 +4,7 @@ import re
 from typing import List
 from langchain_core.documents import Document
 
-from src.ingestion.chunker import resolve_document_category
+from ingestion.chunker import resolve_document_category
 
 
 def _extract_nomor_uu(judul_dokumen: str) -> str:
@@ -85,7 +85,7 @@ def load_and_transform_json(json_path: str) -> List[Document]:
     return documents
 
 def run_ingestion(json_filepath: str):
-    from src.retrieval.vector import VectorStoreManager
+    from ingestion.vector_store import VectorStoreManager
 
     print(f"Membaca file: {json_filepath}...")
     documents = load_and_transform_json(json_filepath)

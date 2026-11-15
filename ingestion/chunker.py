@@ -478,7 +478,7 @@ def validate_parsing(pasal_list: list[dict], zones: dict) -> list[str]:
     return warnings
 
 
-_CATEGORY_MAP_PATH = Path(__file__).resolve().parents[2] / "data" / "document_category_map.json"
+_CATEGORY_MAP_PATH = Path(__file__).resolve().parents[1] / "data" / "document_category_map.json"
 
 
 def _load_category_map() -> dict[int, str]:

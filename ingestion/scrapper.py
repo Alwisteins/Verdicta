@@ -233,7 +233,7 @@ def download_binary_file(url: str, destination: Path) -> bool:
 
 
 def load_category_map() -> dict:
-    map_path = Path("data/document_category_map.json")
+    map_path = Path(__file__).resolve().parents[1] / "data" / "document_category_map.json"
     if not map_path.exists():
         logger.warning("Category map file not found at %s", map_path)
         return {}

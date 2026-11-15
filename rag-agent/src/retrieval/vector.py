@@ -1,9 +1,9 @@
 import os
 import sys
+import time
+import requests
 from typing import List, Optional
 from langchain_core.documents import Document
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
 from dotenv import load_dotenv
@@ -22,7 +22,11 @@ def _safe_qdrant_del(self):
 
 QdrantClient.__del__ = _safe_qdrant_del
 
-HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
+ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID")
+AUTH_TOKEN = os.getenv("CLOUDFLARE_API_KEY")
+CF_URL = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/@cf/baai/bge-m3"
+HEADERS = {"Authorization": f"Bearer {AUTH_TOKEN}"}
+
 QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 COLLECTION_NAME = os.getenv("QDRANT_COLLECTION", "law_chapters")
@@ -41,14 +45,40 @@ ALLOWED_METADATA_FILTERS = {
 }
 
 
+def get_cloudflare_query_embedding(text: str) -> List[float]:
+    """Menghasilkan embedding query menggunakan Cloudflare Workers AI BGE-M3 dengan retry (total ~25s, timeout per panggilan)."""
+    start_time = time.time()
+    max_total_time = 25.0
+    per_call_timeout = 8.0
+
+    while True:
+        elapsed = time.time() - start_time
+        if elapsed >= max_total_time:
+            raise TimeoutError("Cloudflare embedding request exceeded total retry time limit (25s).")
+
+        current_timeout = min(per_call_timeout, max_total_time - elapsed)
+        if current_timeout <= 0:
+            raise TimeoutError("Cloudflare embedding request timed out.")
+
+        try:
+            response = requests.post(
+                CF_URL,
+                headers=HEADERS,
+                json={"text": text},
+                timeout=current_timeout
+            )
+            response.raise_for_status()
+            result = response.json()["result"]
+            return result["data"][0] if "data" in result else result["embeddings"][0]
+        except (requests.RequestException, TimeoutError) as e:
+            if time.time() - start_time >= max_total_time:
+                raise e
+            time.sleep(1.0)
+
+
 class VectorStoreManager:
     def __init__(self, collection_name: str = COLLECTION_NAME):
         self.collection_name = collection_name
-        
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name="BAAI/bge-m3"
-        )
-        
         self.client = QdrantClient(
             url=QDRANT_URL,
             api_key=QDRANT_API_KEY
@@ -68,30 +98,6 @@ class VectorStoreManager:
             )
             print(f"Collection '{self.collection_name}' berhasil dibuat!")
         
-    def get_vectorstore(self) -> QdrantVectorStore:
-        """Mengembalikan instance LangChain Qdrant vectorstore"""
-        return QdrantVectorStore(
-            client=self.client,
-            collection_name=self.collection_name,
-            embedding=self.embeddings
-        )
-        
-    def add_documents(self, documents: List[Document]) -> None:
-        """
-        Menyimpan daftar dokumen ke Qdrant vector store.
-        Otomatis menghitung embedding dari `page_content` dan menyimpan seluruh dict `metadata`
-        """
-        if not documents:
-            print("⚠️ Tidak ada dokumen untuk ditambahkan.")
-            return
-        
-        print(f"📦 Menyimpan {len(documents)} dokumen ke Qdrant collection '{self.collection_name}'")
-        
-        vectorstore = self.get_vectorstore()
-        vectorstore.add_documents(documents)
-        
-        print(f"✅ Selesai menyimpan {len(documents)} dokumen ke Qdrant collection '{self.collection_name}'!")
-        
     def search_documents(
         self,
         query: str,
@@ -99,11 +105,13 @@ class VectorStoreManager:
         filter_dict: Optional[dict] = None
     ) -> List[Document]:
         """
-        Mencari dokumen paling relevan berdasarkan query semantik.
-        Mendukung filter berdasarkan metadata (nomor_uu / pasal).
+        Mencari dokumen paling relevan berdasarkan query semantik menggunakan Cloudflare Workers AI BGE-M3.
+        Mendukung filter metadata.
         """
-        vectorstore = self.get_vectorstore()
+        # 1. Generate query embedding via Cloudflare Workers AI BGE-M3
+        query_vector = get_cloudflare_query_embedding(query)
         
+        # 2. Build Qdrant filter
         qdrant_filter = None
         if filter_dict:
             filter_conditions = []
@@ -118,24 +126,29 @@ class VectorStoreManager:
                             match=qdrant_models.MatchValue(value=value)
                         )
                     )
-            # print(f"[VectorStoreManager] Filter conditions: {filter_conditions}")
             if filter_conditions:
                 qdrant_filter = qdrant_models.Filter(must=filter_conditions)    
            
-        scored_results = vectorstore.similarity_search_with_score(
-            query=query,
-            k=k,
-            filter=qdrant_filter
-        )
+        # 3. Query Qdrant directly using Cloudflare embedding vector
+        search_result = self.client.query_points(
+            collection_name=self.collection_name,
+            query=query_vector,
+            limit=k,
+            query_filter=qdrant_filter,
+            with_payload=True
+        ).points
+
         results = []
-        for doc, score in scored_results:
-            doc.metadata = {
-                **(doc.metadata or {}),
-                "score": score,
-            }
+        for point in search_result:
+            payload = point.payload or {}
+            page_content = payload.get("page_content", "")
+            metadata = payload.get("metadata", {})
+            metadata["score"] = point.score
+            metadata["_id"] = point.id
+            metadata["_collection_name"] = self.collection_name
+            
+            doc = Document(page_content=page_content, metadata=metadata)
             results.append(doc)
-        
-        # print(f"[VectorStoreManager] Found {len(results)} documents for query: '{query}' with filter: {filter_dict}")
         
         return results
 

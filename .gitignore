@@ -1,12 +1,12 @@
 rag-agent/.env
+ingestion/.env
 rag-agent/__pycache__/
-rag-agent/data/
+ingestion/__pycache__/
+data/
 rag-agent/qdrant_storage/
-rag-agent/data/
 rag-agent/tests/
 rag-agent/src/__pycache__/
 rag-agent/src/graph/__pycache__/
-rag-agent/src/ingestion/__pycache__/
 rag-agent/src/retrieval/__pycache__/
 
 web/node_modules/
