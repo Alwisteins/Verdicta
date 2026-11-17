@@ -17,11 +17,16 @@ export async function sendQuestionToRAGEngine(
   threadId: string,
 ): Promise<RAGResponse> {
   const ragEndpoint = process.env.RAG_ENGINE_URL || "http://127.0.0.1:8000/api/v1/chat";
+  const apiKey = process.env.RAG_API_KEY;
+  if (!apiKey) {
+    throw new Error("RAG_API_KEY is not configured for the web server");
+  }
 
   const res = await fetch(ragEndpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "X-API-Key": apiKey,
     },
     body: JSON.stringify({
       question,

@@ -1,9 +1,15 @@
 from typing import List, Optional
+import hmac
 import logging
+import os
+from pathlib import Path
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from dotenv import load_dotenv
+from fastapi import FastAPI, Header, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from src.graph.workflow import app as langgraph_app
 
@@ -44,8 +50,19 @@ class ChatResponse(BaseModel):
 async def root():
     return {"status": "ok", "message": "Verdicta Legal RAG API is running"}
 
+async def require_rag_api_key(x_api_key: str | None = Header(default=None)) -> None:
+    expected_api_key = os.getenv("RAG_API_KEY")
+    if not expected_api_key:
+        logger.error("RAG_API_KEY is not configured")
+        raise HTTPException(status_code=500, detail="RAG API authentication is not configured")
+    if x_api_key is None or not hmac.compare_digest(x_api_key, expected_api_key):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
 @app.post("/api/v1/chat", response_model=ChatResponse, tags=["Chat"])
-async def chat_endpoint(payload: ChatRequest):
+async def chat_endpoint(
+    payload: ChatRequest,
+    _: None = Depends(require_rag_api_key),
+):
     try:
         config = {"configurable": {"thread_id": payload.thread_id}}
         input_data = {
