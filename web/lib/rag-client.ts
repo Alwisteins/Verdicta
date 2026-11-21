@@ -12,9 +12,15 @@ export interface RAGResponse {
   is_fallback: boolean;
 }
 
+export interface ConversationMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export async function sendQuestionToRAGEngine(
   question: string,
   threadId: string,
+  history: ConversationMessage[] = [],
 ): Promise<RAGResponse> {
   const ragEndpoint = process.env.RAG_ENGINE_URL || "http://127.0.0.1:8000/api/v1/chat";
   const apiKey = process.env.RAG_API_KEY;
@@ -31,6 +37,7 @@ export async function sendQuestionToRAGEngine(
     body: JSON.stringify({
       question,
       thread_id: threadId,
+      history,
     }),
   });
 

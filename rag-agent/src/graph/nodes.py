@@ -240,8 +240,10 @@ def condense_question_node(state: GraphState) -> Dict[str, Any]:
     try:
         latest_text = _latest_question_text(question)
         history_text = "\n".join(
-            f"{getattr(msg, 'type', 'message')}: {getattr(msg, 'content', str(msg))}"
-            for msg in history
+            f"{message.get('role', 'message')}: {message.get('content', '')}"
+            if isinstance(message, dict)
+            else f"{getattr(message, 'type', 'message')}: {getattr(message, 'content', str(message))}"
+            for message in history
         )
 
         condense_prompt = ChatPromptTemplate.from_messages([

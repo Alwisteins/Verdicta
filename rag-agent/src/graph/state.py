@@ -1,6 +1,5 @@
-from typing import Annotated, List, Optional, TypedDict, Literal, Dict, Any
+from typing import List, Optional, TypedDict, Literal, Dict, Any
 from langchain_core.documents import Document
-from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
 CategoryType = Literal["specific_article", "general_inquiry", "comparative_analysis", "list_discovery", "legal_status", "definition_term", "penalty_sanction"]
@@ -25,19 +24,9 @@ class ExtractedFilters(BaseModel):
             if not (isinstance(value, str) and not value.strip())
         }
         
-from langchain_core.messages import BaseMessage
-
-def trim_messages(existing: list[BaseMessage], new: list[BaseMessage] | BaseMessage) -> list[BaseMessage]:
-    "Reducer untuk memangkas dan membatasi 6 pesan terakhir"
-    if isinstance(new, list):
-        combined = existing + new
-    else:
-        combined = existing + [new]
-    return combined[-6:]
-
 class GraphState(TypedDict):
     question         : Any                              # user input (overwritten, not appended)
-    history          : Annotated[list, trim_messages]   # percakapan sebelumnya
+    history          : List[Dict[str, str]]             # maksimal 6 pesan dari frontend
     question_category: CategoryType                     # kategori pertanyaan
     filters          : Optional[ExtractedFilters]       # filter metadata
     documents        : List[Document]                   # hasil retrieval dari Qdrant

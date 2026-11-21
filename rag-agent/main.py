@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 import hmac
 import logging
 import os
@@ -30,9 +30,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+class ConversationMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
 class ChatRequest(BaseModel):
     question: str = Field(..., description="Pertanyaan dari pengguna")
     thread_id: str = Field(..., description="Identifier unik sesi percakapan untuk LangGraph MemorySaver")
+    history: List[ConversationMessage] = Field(default_factory=list, description="Maksimal 6 pesan sebelumnya")
 
 class DocumentMetadata(BaseModel):
     title: Optional[str] = None
@@ -67,7 +72,7 @@ async def chat_endpoint(
         config = {"configurable": {"thread_id": payload.thread_id}}
         input_data = {
             "question": payload.question,
-            "messages": [("user", payload.question)]
+            "history": [message.model_dump() for message in payload.history[-6:]],
         }
 
         result = langgraph_app.invoke(input_data, config=config)

@@ -18,6 +18,9 @@ export async function GET(request: Request) {
     return NextResponse.json({ success: true, messages });
   } catch (error) {
     console.error("Fetch messages error:", error);
-    return NextResponse.json({ success: true, messages: [] });
+    return NextResponse.json(
+      { success: false, error: "Failed to fetch conversation messages" },
+      { status: 500 },
+    );
   }
 }

@@ -6,8 +6,6 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUpRight,
-  BadgeCheck,
-  BookOpen,
   CheckCircle2,
   Copy,
   FileText,
@@ -15,16 +13,13 @@ import {
   Gavel,
   HelpCircle,
   History,
-  Landmark,
   Menu,
   Paperclip,
   Plus,
-  RefreshCw,
   Scale,
   Search,
   Settings2,
-  Share2,
-  ShieldCheck,
+  TriangleAlertIcon,
 } from "lucide-react";
 import { Suspense, useState, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
@@ -146,7 +141,11 @@ function ChatbotContent() {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(searchParams.get("threadId"));
   const [inputMessage, setInputMessage] = useState("");
   const [messages, setMessages] = useState<MessageItem[]>([]);
+  const [isResponseError, setIsResponseError] = useState(false);
+  const [chatResponseError, setChatResponseError] = useState(false);
+  const [failedMessage, setFailedMessage] = useState("");
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [messagesReloadKey, setMessagesReloadKey] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [threads, setThreads] = useState<ThreadItem[]>([]);
   const [loadingThreads, setLoadingThreads] = useState(true);
@@ -163,6 +162,12 @@ function ChatbotContent() {
         const threadsData = await threadsRes.json();
         if (threadsData.threads) {
           setThreads(threadsData.threads);
+          // The sidebar treats the first thread as selected when there is no
+          // threadId in the URL. Keep the actual selection in sync so its
+          // messages are loaded as well.
+          if (threadsData.threads.length > 0) {
+            setActiveThreadId((current) => current ?? threadsData.threads[0].id);
+          }
         }
         const userData = await userRes.json();
         if (userData.user) {
@@ -180,37 +185,49 @@ function ChatbotContent() {
   useEffect(() => {
     if (!activeThreadId || activeThreadId === "new") {
       setMessages([]);
+      setIsResponseError(false);
+      setFailedMessage("");
+      setLoadingMessages(false);
       return;
     }
 
     async function loadMessages() {
       setLoadingMessages(true);
+      setIsResponseError(false);
+      setFailedMessage("");
       try {
         const res = await fetch(`/api/messages?threadId=${activeThreadId}`);
-        const data = await res.json();
-        if (data.messages) {
-          setMessages(data.messages);
+        if (!res.ok) {
+          throw new Error(`Failed to load messages (${res.status})`);
         }
+        const data = await res.json();
+        if (!Array.isArray(data.messages)) {
+          throw new Error("Invalid messages response");
+        }
+        setMessages(data.messages);
       } catch (err) {
         console.error("Failed to load messages", err);
+        setIsResponseError(true);
       } finally {
         setLoadingMessages(false);
       }
     }
     loadMessages();
-  }, [activeThreadId]);
+  }, [activeThreadId, messagesReloadKey]);
 
   async function createNewThread() {
     setActiveThreadId("new");
     setInputMessage("");
+    setChatResponseError(false);
+    setFailedMessage("");
   }
 
-  async function handleSendMessage() {
-    if (!inputMessage.trim()) return;
+  async function handleSendMessage(retryText?: any) {
+    const textToSend = (retryText ?? inputMessage).trim();
+    if (!textToSend) return;
 
     let currentThreadId = activeThreadId;
-    const textToSend = inputMessage.trim();
-    setInputMessage("");
+    if (!retryText) setInputMessage("");
 
     if (!currentThreadId || currentThreadId === "new") {
       try {
@@ -245,7 +262,12 @@ function ChatbotContent() {
       isFallback: false,
       createdAt: new Date().toISOString(),
     };
-    setMessages((prev) => [...prev, tempUserMsg]);
+    setIsResponseError(false);
+    setChatResponseError(false);
+    setFailedMessage("");
+    if (!retryText) {
+      setMessages((prev) => [...prev, tempUserMsg]);
+    }
 
     try {
       const res = await fetch("/api/chat", {
@@ -254,18 +276,29 @@ function ChatbotContent() {
         body: JSON.stringify({
           threadId: currentThreadId,
           question: textToSend,
+          history: messages
+            .filter((message) => message.role === "USER" || message.role === "ASSISTANT")
+            .slice(-6)
+            .map(({ role, content }) => ({
+              role: role.toLowerCase(),
+              content,
+            })),
           userId: user?.id,
         }),
       });
 
       const assistantMsg = await res.json();
-      if (res.ok && assistantMsg) {
+      if (res.ok && assistantMsg && !assistantMsg.error) {
         setMessages((prev) => [...prev, assistantMsg]);
       } else {
         console.error("Failed response from chat api", assistantMsg);
+        setFailedMessage(textToSend);
+        setChatResponseError(true);
       }
     } catch (err) {
       console.error("Failed to send message", err);
+      setFailedMessage(textToSend);
+      setChatResponseError(true);
     }
   }
   const defaultQuestion =
@@ -403,6 +436,8 @@ function ChatbotContent() {
                         }`}
                         onClick={() => {
                           setActiveThreadId(thread.id);
+                          setChatResponseError(false);
+                          setFailedMessage("");
                         }}
                         type="button">
                         <Gavel
@@ -447,11 +482,28 @@ function ChatbotContent() {
 
         <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
           <div className="mx-auto w-full max-w-6xl flex-1 space-y-6 overflow-y-auto px-4 py-6 pb-48 md:px-8 [scrollbar-width:thin]">
-            {loadingMessages ? (
+            {isResponseError ? (
+              <div className="flex items-center justify-between w-full max-w-3xl px-4 py-2.5 bg-[#EBD399] border border-[#D4B46A] rounded-xl text-[#4A3B18] shadow-xs">
+                <div className="flex items-center gap-3">
+                  <TriangleAlertIcon className="size-5 text-[#4A3B18]" />
+
+                  <span className="text-sm font-medium tracking-tight">
+                    Gagal memuat pesan percakapan. Silakan coba lagi.
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setMessagesReloadKey((key) => key + 1)}
+                  className="px-3 py-1.5 ml-4 text-xs font-medium text-[#3D3114] bg-[#E3C888] hover:bg-[#D9BA73] active:scale-[0.98] border border-[#C8A65B] rounded-lg transition-all cursor-pointer shrink-0">
+                  Coba Lagi
+                </button>
+              </div>
+            ) : loadingMessages ? (
               <div className="flex h-40 items-center justify-center text-sm text-muted">
                 Memuat pesan percakapan...
               </div>
-            ) : messages.length === 0 ? (
+            ) : messages.length === 0 && !chatResponseError ? (
               <div className="flex flex-col items-center justify-center py-20 text-center">
                 <div className="mb-4 flex size-14 items-center justify-center rounded-2xl bg-panelMid text-emerald">
                   <Gavel className="size-7" />
@@ -463,131 +515,151 @@ function ChatbotContent() {
                 </p>
               </div>
             ) : (
-              messages.map((msg) => (
-                <div key={msg.id} className="space-y-4">
-                  {msg.role === "USER" ? (
-                    <article className="rounded-xl border border-hairline/50 bg-white p-5 shadow-ambient">
-                      <div className="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-hairline/30 pb-3">
-                        <div className="flex items-center gap-2.5">
-                          {user?.image && !imageError ? (
-                            <img
-                              src={user.image}
-                              alt={displayName}
-                              className="size-7 rounded-full border border-hairline object-cover"
-                              onError={() => setImageError(true)}
-                            />
-                          ) : (
-                            <span className="flex size-7 items-center justify-center rounded-full bg-navy text-xs font-bold uppercase text-white">
-                              {initial}
-                            </span>
-                          )}
-                          <div>
-                            <span className="text-sm font-bold">Pertanyaan Anda</span>
-                            <span className="mx-1.5 text-hairline">|</span>
-                            <span className="text-xs text-muted">
-                              {new Date(msg.createdAt).toLocaleTimeString("id-ID", {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                              })}{" "}
-                              WIB
-                            </span>
-                          </div>
-                        </div>
-                        <span className="inline-flex items-center gap-1 rounded-full border border-hairline/50 bg-panelSoft px-2.5 py-0.5 font-mono text-[10px] font-semibold text-muted">
-                          <Gavel className="size-3.5 text-emerald" />
-                          {msg.category || "Hukum Umum"}
-                        </span>
-                      </div>
-                      <p className="text-lg font-semibold leading-8 text-ink">"{msg.content}"</p>
-                    </article>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="flex flex-wrap items-center justify-between gap-2 px-1">
-                        <div className="flex items-center gap-2.5">
-                          <span className="flex size-7 items-center justify-center rounded-lg bg-emerald text-white">
-                            <Scale className="size-4" />
-                          </span>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-bold">Analisis Yuridis AI</span>
-                            <span className="hidden h-3 w-px bg-hairline sm:block" />
-                            <span className="inline-flex items-center gap-1 rounded bg-panelMid px-2 py-0.5 font-mono text-[10px] font-semibold">
-                              <span className="size-1.5 rounded-full bg-emerald" />
-                              Model: Verdicta JDIHN RAG
-                            </span>
-                          </div>
-                        </div>
-                        <span className="flex items-center gap-1.5 text-xs text-muted">
-                          <CheckCircle2 className="size-4 text-emerald" />
-                          Sinkronisasi JDIHN RI
-                        </span>
-                      </div>
-
-                      <article className="space-y-6 rounded-xl border border-hairline/50 bg-white p-5 shadow-ambient md:p-6">
-                        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-hairline/30 pb-4">
-                          <div className="flex items-center gap-3">
-                            <span className="flex size-9 items-center justify-center rounded-lg bg-panelSoft text-emerald">
-                              <Gavel className="size-5" />
-                            </span>
+              <>
+                {messages.map((msg) => (
+                  <div key={msg.id} className="space-y-4">
+                    {msg.role === "USER" ? (
+                      <article className="rounded-xl border border-hairline/50 bg-white p-5 shadow-ambient">
+                        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-hairline/30 pb-3">
+                          <div className="flex items-center gap-2.5">
+                            {user?.image && !imageError ? (
+                              <img
+                                src={user.image}
+                                alt={displayName}
+                                className="size-7 rounded-full border border-hairline object-cover"
+                                onError={() => setImageError(true)}
+                              />
+                            ) : (
+                              <span className="flex size-7 items-center justify-center rounded-full bg-navy text-xs font-bold uppercase text-white">
+                                {initial}
+                              </span>
+                            )}
                             <div>
-                              <h1 className="text-lg font-bold">Hasil Analisis Yuridis</h1>
-                              <p className="text-xs text-muted">
-                                Disusun dari sumber resmi dan sitasi terverifikasi.
-                              </p>
+                              <span className="text-sm font-bold">Pertanyaan Anda</span>
+                              <span className="mx-1.5 text-hairline">|</span>
+                              <span className="text-xs text-muted">
+                                {new Date(msg.createdAt).toLocaleTimeString("id-ID", {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}{" "}
+                                WIB
+                              </span>
                             </div>
                           </div>
-                          <span className="inline-flex items-center gap-1 rounded-full border border-emerald/30 bg-emeraldSoft px-2.5 py-1 font-mono text-[10px] font-bold text-emerald">
-                            <span className="size-1.5 rounded-full bg-emerald" />
-                            Validitas: {msg.isFallback ? "Fallback" : "Berlaku"}
+                          <span className="inline-flex items-center gap-1 rounded-full border border-hairline/50 bg-panelSoft px-2.5 py-0.5 font-mono text-[10px] font-semibold text-muted">
+                            <Gavel className="size-3.5 text-emerald" />
+                            {msg.category || "Hukum Umum"}
+                          </span>
+                        </div>
+                        <p className="text-lg font-semibold leading-8 text-ink">"{msg.content}"</p>
+                      </article>
+                    ) : (
+                      <div className="space-y-4">
+                        <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+                          <div className="flex items-center gap-2.5">
+                            <span className="flex size-7 items-center justify-center rounded-lg bg-emerald text-white">
+                              <Scale className="size-4" />
+                            </span>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-bold">Analisis Yuridis AI</span>
+                              <span className="hidden h-3 w-px bg-hairline sm:block" />
+                              <span className="inline-flex items-center gap-1 rounded bg-panelMid px-2 py-0.5 font-mono text-[10px] font-semibold">
+                                <span className="size-1.5 rounded-full bg-emerald" />
+                                Model: Verdicta JDIHN RAG
+                              </span>
+                            </div>
+                          </div>
+                          <span className="flex items-center gap-1.5 text-xs text-muted">
+                            <CheckCircle2 className="size-4 text-emerald" />
+                            Sinkronisasi JDIHN RI
                           </span>
                         </div>
 
-                        <div className="max-w-4xl text-sm leading-7 text-ink">
-                          <div className="prose prose-slate max-w-none text-ink text-sm leading-relaxed prose-headings:font-bold prose-headings:text-ink prose-p:my-2.5 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-blockquote:border-l-4 prose-blockquote:border-emerald prose-blockquote:bg-panelSoft/50 prose-blockquote:px-4 prose-blockquote:py-2.5 prose-blockquote:italic prose-blockquote:rounded-r-lg prose-blockquote:my-3 prose-hr:my-4 prose-hr:border-hairline/60">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                              {msg.content}
-                            </ReactMarkdown>
-                          </div>
-                        </div>
-
-                        {msg.citedDocuments &&
-                          Array.isArray(msg.citedDocuments) &&
-                          msg.citedDocuments.length > 0 && (
-                            <section className="space-y-3 border-t border-hairline/30 pt-5">
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <h2 className="flex items-center gap-2 text-sm font-bold">
-                                  <FolderOpen className="size-4 text-emerald" />
-                                  Dasar Hukum & Dokumen Terkait
-                                </h2>
+                        <article className="space-y-6 rounded-xl border border-hairline/50 bg-white p-5 shadow-ambient md:p-6">
+                          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-hairline/30 pb-4">
+                            <div className="flex items-center gap-3">
+                              <span className="flex size-9 items-center justify-center rounded-lg bg-panelSoft text-emerald">
+                                <Gavel className="size-5" />
+                              </span>
+                              <div>
+                                <h1 className="text-lg font-bold">Hasil Analisis Yuridis</h1>
+                                <p className="text-xs text-muted">
+                                  Disusun dari sumber resmi dan sitasi terverifikasi.
+                                </p>
                               </div>
-                              <div className="space-y-2">
-                                {msg.citedDocuments.map((doc: any, i: number) => (
-                                  <div
-                                    key={i}
-                                    className="flex flex-col justify-between gap-3 rounded-lg border border-hairline/40 bg-panelSoft/70 p-3 transition hover:border-emerald/40 sm:flex-row sm:items-center">
-                                    <div className="flex items-start gap-3">
-                                      <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border border-hairline/40 bg-white font-mono text-[11px] font-bold text-emerald">
-                                        [{i + 1}]
-                                      </span>
-                                      <div>
-                                        <p className="text-sm font-semibold leading-5">
-                                          {doc.title || doc.nomor_uu || "Dokumen Hukum"}
-                                        </p>
-                                        <p className="mt-0.5 text-[11px] text-muted">
-                                          {doc.pasal ? `Pasal: ${doc.pasal}` : ""}{" "}
-                                          {doc.jenis_dokumen ? `| ${doc.jenis_dokumen}` : ""}
-                                        </p>
+                            </div>
+                            <span className="inline-flex items-center gap-1 rounded-full border border-emerald/30 bg-emeraldSoft px-2.5 py-1 font-mono text-[10px] font-bold text-emerald">
+                              <span className="size-1.5 rounded-full bg-emerald" />
+                              Validitas: {msg.isFallback ? "Fallback" : "Berlaku"}
+                            </span>
+                          </div>
+
+                          <div className="max-w-4xl text-sm leading-7 text-ink">
+                            <div className="prose prose-slate max-w-none text-ink text-sm leading-relaxed prose-headings:font-bold prose-headings:text-ink prose-p:my-2.5 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-blockquote:border-l-4 prose-blockquote:border-emerald prose-blockquote:bg-panelSoft/50 prose-blockquote:px-4 prose-blockquote:py-2.5 prose-blockquote:italic prose-blockquote:rounded-r-lg prose-blockquote:my-3 prose-hr:my-4 prose-hr:border-hairline/60">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                {msg.content}
+                              </ReactMarkdown>
+                            </div>
+                          </div>
+
+                          {msg.citedDocuments &&
+                            Array.isArray(msg.citedDocuments) &&
+                            msg.citedDocuments.length > 0 && (
+                              <section className="space-y-3 border-t border-hairline/30 pt-5">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <h2 className="flex items-center gap-2 text-sm font-bold">
+                                    <FolderOpen className="size-4 text-emerald" />
+                                    Dasar Hukum & Dokumen Terkait
+                                  </h2>
+                                </div>
+                                <div className="space-y-2">
+                                  {msg.citedDocuments.map((doc: any, i: number) => (
+                                    <div
+                                      key={i}
+                                      className="flex flex-col justify-between gap-3 rounded-lg border border-hairline/40 bg-panelSoft/70 p-3 transition hover:border-emerald/40 sm:flex-row sm:items-center">
+                                      <div className="flex items-start gap-3">
+                                        <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border border-hairline/40 bg-white font-mono text-[11px] font-bold text-emerald">
+                                          [{i + 1}]
+                                        </span>
+                                        <div>
+                                          <p className="text-sm font-semibold leading-5">
+                                            {doc.title || doc.nomor_uu || "Dokumen Hukum"}
+                                          </p>
+                                          <p className="mt-0.5 text-[11px] text-muted">
+                                            {doc.pasal ? `Pasal: ${doc.pasal}` : ""}{" "}
+                                            {doc.jenis_dokumen ? `| ${doc.jenis_dokumen}` : ""}
+                                          </p>
+                                        </div>
                                       </div>
                                     </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </section>
-                          )}
-                      </article>
+                                  ))}
+                                </div>
+                              </section>
+                            )}
+                        </article>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {chatResponseError && (
+                  <div className="flex w-full items-center justify-between rounded-xl border border-yellow-300 bg-yellow-50 px-4 py-2.5 text-[#4A3B18] shadow-xs">
+                    <div className="flex items-center gap-3">
+                      <TriangleAlertIcon className="size-5 shrink-0 text-[#4A3B18]" />
+                      <span className="text-sm font-medium tracking-tight">
+                        Gagal mendapatkan respons untuk pertanyaan Anda. Silakan coba lagi.
+                      </span>
                     </div>
-                  )}
-                </div>
-              ))
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (failedMessage) void handleSendMessage(failedMessage);
+                      }}
+                      className="ml-4 shrink-0 cursor-pointer rounded-lg border border-yellow-950 bg-[#4A3B18] px-3 py-1.5 text-xs font-medium text-yellow-50 transition-all hover:bg-[#D9BA73] active:scale-[0.98]">
+                      Coba Lagi
+                    </button>
+                  </div>
+                )}
+              </>
             )}
           </div>
 
