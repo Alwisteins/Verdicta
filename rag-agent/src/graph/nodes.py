@@ -471,7 +471,9 @@ def generation_node(state: GraphState) -> Dict[str, Any]:
         ]
 
         generation_result = llm.invoke(prompt_messages)
+        logger.info("[Generation] isi dari generation_result: %s", generation_result)
         content = generation_result.content
+        logger.info("[Generation] isi dari content: %s", content)
         if isinstance(content, list):
             generation_text = content[0].get("text", "")
         else:
