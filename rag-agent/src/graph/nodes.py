@@ -395,6 +395,10 @@ def reranker_node(state: GraphState) -> Dict[str, Any]:
         logger.info("reranker_node dipanggil dengan daftar dokumen kosong.")
         return {"documents": []}
     
+    if len(documents) <= 5:
+        logger.info("Jumlah dokumen <= 5, tidak perlu reranking.")
+        return {"documents": documents}
+    
     docs_for_rerank = [
         " ".join(getattr(doc, 'page_content', str(doc)).split())[:1100]
         for doc in documents
