@@ -1,5 +1,8 @@
 import logging
 import re
+import requests
+import json
+import os
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
@@ -16,7 +19,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 ROUTER_MODEL_NAME = "gemini-3.5-flash-lite"
 ROUTER_TEMPERATURE = 0
-DEFAULT_TOP_K = 5
+DEFAULT_TOP_K = 15
 BROAD_TOP_K = 20
 RETRIEVAL_SCORE_THRESHOLD = 0.40
 DEFAULT_CATEGORY: CategoryType = "general_inquiry"
@@ -375,6 +378,55 @@ def retrieve_node(state: GraphState) -> Dict[str, Any]:
 
     logger.info("Ditemukan %d dokumen relevan.", len(documents))
     return {"documents": documents}
+
+def reranker_node(state: GraphState) -> Dict[str, Any]:
+    """
+    Node LangGraph untuk melakukan reranking dokumen hasil pencarian
+    berdasarkan pertanyaan pengguna.
+    """
+    question = state.get("question", "")
+    documents = state.get("documents", [])
+
+    if not question:
+        logger.warning("reranker_node dipanggil tanpa 'question' di state.")
+        return {"documents": documents}
+
+    if not documents:
+        logger.info("reranker_node dipanggil dengan daftar dokumen kosong.")
+        return {"documents": []}
+    
+    docs_for_rerank = [
+        " ".join(getattr(doc, 'page_content', str(doc)).split())[:1100]
+        for doc in documents
+    ]
+    
+    url = os.getenv("RERANKER_URL")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {os.getenv('RERANKER_API_KEY')}"
+    }
+    data = {
+        "model": os.getenv("RERANKER_MODEL_NAME"),
+        "query": _latest_question_text(question),
+        "top_n": 5,
+        "documents": docs_for_rerank
+    }
+    
+    logger.info("isi dari docs_for_rerank: %s", docs_for_rerank)
+
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(data))
+        response.raise_for_status()
+        results = response.json().get("results", [])
+        reranked_indices = [item["index"] for item in results]
+        
+        logger.info("isi dari response.json(): %s", response.json())
+        logger.info("Reranking berhasil. Indeks dokumen setelah reranking: %s", reranked_indices)
+        return {"documents": [documents[i] for i in reranked_indices]}
+
+    except Exception:
+        logger.exception("Gagal melakukan reranking di reranker_node.")
+        return {"documents": documents}
 
 GENERATION_SYSTEM_PROMPT = """
 Anda adalah Verdicta, asisten AI spesialis hukum Indonesia yang presisi, objektif, dan terpercaya. Tugas Anda adalah menjawab pertanyaan hukum pengguna berdasarkan HANYA pada konteks dokumen perundang-undangan yang disediakan dari hasil pencarian (Retrieval Context).
